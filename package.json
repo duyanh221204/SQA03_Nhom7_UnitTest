@@ -1,0 +1,18 @@
+{
+  "name": "sqa03-nhom7-unittest",
+  "version": "1.0.0",
+  "description": "Unit Tests for Online Recruitment System - Nhom 07 - SQA03",
+  "scripts": {
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "test:watch": "jest --watch",
+    "test:verbose": "jest --verbose"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.0",
+    "typescript": "^5.4.0"
+  }
+}
