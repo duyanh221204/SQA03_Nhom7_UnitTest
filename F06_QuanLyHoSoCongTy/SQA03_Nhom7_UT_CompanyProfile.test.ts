@@ -1,444 +1,347 @@
 /**
  * @file SQA03_Nhom7_UT_CompanyProfile.test.ts
  * @module F06_QuanLyHoSoCongTy
- * @description Unit tests for RegisterCompanyUseCase & UpdateCompanyUseCase
- *              F06: Quản lý hồ sơ công ty (Nhà tuyển dụng)
+ * @description Unit tests for Quản lý hồ sơ công ty (Nhà tuyển dụng)
+ *              Use cases: RegisterCompany, UpdateCompany, UploadLogo, UploadBanner
  * @group Nhom 07 - SQA03
  *
- * Covers:
- *  - Đăng ký công ty mới thành công bởi CANDIDATE
- *  - Thất bại khi user đã là RECRUITER
- *  - Thất bại khi user là ADMIN
- *  - Thất bại khi tên công ty đã tồn tại
- *  - Thất bại khi không có file tài liệu
- *  - Thất bại khi user đã có đơn chờ duyệt
- *  - Cập nhật thông tin công ty thành công (OWNER)
- *  - Thất bại khi không phải member của công ty
- *  - Thất bại khi là MEMBER thường (không phải OWNER/MANAGER)
+ * Tiền tố : UT_F06_
+ * Tổng cộng: 31 test cases (Tất cả 31 đều PASS)
  */
 
-// =====================================================================
-// INLINE TYPES & ERRORS
-// =====================================================================
-enum UserRole    { CANDIDATE = 'CANDIDATE', RECRUITER = 'RECRUITER', ADMIN = 'ADMIN' }
-enum CompanyRole { OWNER = 'OWNER', MANAGER = 'MANAGER', RECRUITER = 'RECRUITER', MEMBER = 'MEMBER' }
+import { RegisterCompanyUseCase } from '../src/modules/company/application/use-cases/RegisterCompanyUseCase';
+import { UpdateCompanyUseCase } from '../src/modules/company/application/use-cases/UpdateCompanyUseCase';
+import { UploadLogoUseCase } from '../src/modules/company/application/use-cases/UploadLogoUseCase';
+import { UploadBannerUseCase } from '../src/modules/company/application/use-cases/UploadBannerUseCase';
 
-class ConflictError extends Error {
-  statusCode = 409;
-  constructor(msg: string) { super(msg); this.name = 'ConflictError'; }
-}
-class ValidationError extends Error {
-  statusCode = 400;
-  constructor(msg: string) { super(msg); this.name = 'ValidationError'; }
-}
-class NotFoundError extends Error {
-  statusCode = 404;
-  constructor(msg: string) { super(msg); this.name = 'NotFoundError'; }
-}
-class AuthorizationError extends Error {
-  statusCode = 403;
-  constructor(msg: string) { super(msg); this.name = 'AuthorizationError'; }
-}
+import { CompanyRole } from '../src/modules/company/domain/enums/CompanyRole';
+import { UserRole } from '../src/modules/user/domain/enums/UserRole';
+import { UserStatus } from '../src/modules/user/domain/enums/UserStatus';
+import { NotFoundError, ConflictError, ValidationError, AuthorizationError } from '../src/shared/domain/errors/index';
 
-// =====================================================================
-// INLINE USE CASES
-// =====================================================================
-interface ICompanyRepository {
-  nameExists(name: string, excludeId?: string): Promise<boolean>;
-  save(data: any): Promise<any>;
-  findById(id: string): Promise<any | null>;
-  findByIdWithMembers(id: string): Promise<any | null>;
-  update(id: string, data: any): Promise<any>;
-}
-interface ICompanyMemberRepository {
-  findByUserId(userId: string): Promise<any | null>;
-  findByCompanyAndUser(companyId: string, userId: string): Promise<any | null>;
-  save(data: any): Promise<any>;
-  delete(id: string): Promise<any>;
-}
-interface IUserRepository {
-  findById(id: string): Promise<any | null>;
-  findAll(opts: any): Promise<{ data: any[] }>;
-}
-interface IStorageService {
-  uploadDocument(buffer: Buffer, name: string, mime: string): Promise<string>;
-  uploadImage(buffer: Buffer, name: string, mime: string, folder: string): Promise<string>;
-  deleteFile(url: string): Promise<void>;
-}
-interface INotificationService {
-  createNotification(data: any): Promise<any>;
-}
-
-class RegisterCompanyUseCase {
-  constructor(
-    private companyRepo: ICompanyRepository,
-    private memberRepo: ICompanyMemberRepository,
-    private userRepo: IUserRepository,
-    private storageService: IStorageService,
-    private notificationService: INotificationService,
-  ) {}
-
-  async execute(input: {
-    ownerId?: string;
-    userId?: string;
-    name: string;
-    website?: string;
-    description?: string;
-    industry?: string;
-    companySize?: string;
-    address?: string;
-    phone?: string;
-    email?: string;
-    documentFile?: { buffer: Buffer; originalname: string; mimetype: string };
-    logoFile?: { buffer: Buffer; originalname: string; mimetype: string };
-  }) {
-    const ownerId = input.ownerId ?? input.userId!;
-
-    const user = await this.userRepo.findById(ownerId);
-    if (!user) throw new ValidationError('Người dùng không tồn tại');
-
-    if (user.role === UserRole.RECRUITER)
-      throw new ConflictError('Bạn đã là nhà tuyển dụng của một công ty.');
-    if (user.role === UserRole.ADMIN)
-      throw new ConflictError('Tài khoản quản trị viên không thể đăng ký công ty.');
-
-    const existingMember = await this.memberRepo.findByUserId(ownerId);
-    if (existingMember) {
-      const existingCompany = await this.companyRepo.findById(existingMember.companyId);
-      if (existingCompany?.status === 'PENDING')
-        throw new ConflictError('Bạn đã có đơn đăng ký công ty đang chờ xét duyệt.');
-    }
-
-    const nameExists = await this.companyRepo.nameExists(input.name);
-    if (nameExists) throw new ConflictError('Tên công ty đã tồn tại');
-
-    if (!input.documentFile) throw new ValidationError('Tài liệu đăng ký công ty là bắt buộc');
-
-    const documentUrl = await this.storageService.uploadDocument(
-      input.documentFile.buffer,
-      input.documentFile.originalname,
-      input.documentFile.mimetype,
-    );
-
-    const company = await this.companyRepo.save({
-      name: input.name,
-      documentUrl,
-      status: 'PENDING',
-    });
-
-    await this.memberRepo.save({ userId: ownerId, companyId: company.id, companyRole: CompanyRole.OWNER });
-
-    const admins = await this.userRepo.findAll({ role: UserRole.ADMIN, page: 1, limit: 100 });
-    for (const admin of admins.data) {
-      await this.notificationService.createNotification({
-        userId: admin.id, type: 'COMPANY_REGISTRATION', title: 'Đăng ký công ty mới',
-        message: `Công ty "${company.name}" đã đăng ký`, data: { companyId: company.id },
-      });
-    }
-
-    return await this.companyRepo.findByIdWithMembers(company.id);
-  }
-}
-
-class UpdateCompanyUseCase {
-  constructor(
-    private companyRepo: ICompanyRepository,
-    private memberRepo: ICompanyMemberRepository,
-    private storageService: IStorageService,
-  ) {}
-
-  async execute(input: {
-    companyId: string;
-    userId: string;
-    name?: string;
-    description?: string;
-    address?: string;
-    logoFile?: { buffer: Buffer; originalname: string; mimetype: string };
-  }) {
-    const company = await this.companyRepo.findByIdWithMembers(input.companyId);
-    if (!company) throw new NotFoundError('Company not found');
-
-    const member = await this.memberRepo.findByCompanyAndUser(input.companyId, input.userId);
-    if (!member) throw new AuthorizationError('You are not a member of this company');
-
-    if (member.companyRole !== CompanyRole.OWNER && member.companyRole !== CompanyRole.MANAGER)
-      throw new AuthorizationError('Only owners and managers can update company information');
-
-    if (input.name && input.name !== company.name) {
-      const nameExists = await this.companyRepo.nameExists(input.name, input.companyId);
-      if (nameExists) throw new ConflictError('Company name already exists');
-    }
-
-    const updateData: Record<string, unknown> = {};
-    if (input.name !== undefined) updateData.name = input.name;
-    if (input.description !== undefined) updateData.description = input.description;
-    if (input.address !== undefined) updateData.address = input.address;
-
-    await this.companyRepo.update(input.companyId, updateData);
-    return await this.companyRepo.findByIdWithMembers(input.companyId);
-  }
-}
-
-// =====================================================================
-// HELPERS
-// =====================================================================
-const buildUser = (overrides: any = {}) => ({
-  id: 'user-001',
-  email: 'user@example.com',
-  role: UserRole.CANDIDATE,
-  ...overrides,
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const buildCompany = (overrides: any = {}) => ({
+    id: 'company-001',
+    name: 'Tech Corp',
+    status: UserStatus.ACTIVE,
+    logoUrl: 'http://example.com/logo.png',
+    bannerUrl: 'http://example.com/banner.png',
+    members: [],
+    ...overrides,
 });
 
-const buildCompany = (overrides: any = {}) => ({
-  id: 'company-001',
-  name: 'New Company',
-  status: 'PENDING',
-  documentUrl: 'https://storage.example.com/doc.pdf',
-  members: [],
-  ...overrides,
+const buildUser = (overrides: any = {}) => ({
+    id: 'user-001',
+    email: 'test@example.com',
+    role: UserRole.CANDIDATE,
+    status: UserStatus.ACTIVE,
+    ...overrides,
 });
 
 const buildMember = (overrides: any = {}) => ({
-  id: 'member-001',
-  userId: 'user-001',
-  companyId: 'company-001',
-  companyRole: CompanyRole.OWNER,
-  ...overrides,
+    id: 'member-001',
+    userId: 'user-001',
+    companyId: 'company-001',
+    companyRole: CompanyRole.OWNER,
+    ...overrides,
 });
 
-const dummyFile = { buffer: Buffer.from('dummy'), originalname: 'doc.pdf', mimetype: 'application/pdf' };
+const mockFile = { buffer: Buffer.from('mock'), originalname: 'test.png', mimetype: 'image/png' };
+const mockDocFile = { buffer: Buffer.from('doc'), originalname: 'doc.pdf', mimetype: 'application/pdf' };
 
-// =====================================================================
-// TEST SUITE: RegisterCompanyUseCase
-// =====================================================================
-describe('F06 - Đăng ký công ty | RegisterCompanyUseCase', () => {
+// ═════════════════════════════════════════════════════════════════════════════
+// F06-A: RegisterCompanyUseCase (11 TC)
+// ═════════════════════════════════════════════════════════════════════════════
+describe('F06-A – RegisterCompanyUseCase', () => {
+    let uc: RegisterCompanyUseCase;
+    let companyRepo: any;
+    let memberRepo: any;
+    let userRepo: any;
+    let storageSvc: any;
+    let notifySvc: any;
 
-  const makeDeps = (userOverrides: any = {}, companyOverrides: any = {}) => {
-    const companyRepo: jest.Mocked<ICompanyRepository> = {
-      nameExists: jest.fn().mockResolvedValue(false),
-      save: jest.fn().mockResolvedValue(buildCompany(companyOverrides)),
-      findById: jest.fn().mockResolvedValue(null),
-      findByIdWithMembers: jest.fn().mockResolvedValue(buildCompany(companyOverrides)),
-      update: jest.fn(),
-    };
-    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
-      findByUserId: jest.fn().mockResolvedValue(null),
-      findByCompanyAndUser: jest.fn().mockResolvedValue(null),
-      save: jest.fn().mockResolvedValue(buildMember()),
-      delete: jest.fn(),
-    };
-    const userRepo: jest.Mocked<IUserRepository> = {
-      findById: jest.fn().mockResolvedValue(buildUser(userOverrides)),
-      findAll: jest.fn().mockResolvedValue({ data: [] }),
-    };
-    const storageSvc: jest.Mocked<IStorageService> = {
-      uploadDocument: jest.fn().mockResolvedValue('https://storage.example.com/doc.pdf'),
-      uploadImage: jest.fn(),
-      deleteFile: jest.fn(),
-    };
-    const notificationSvc: jest.Mocked<INotificationService> = {
-      createNotification: jest.fn().mockResolvedValue({}),
-    };
-    return { companyRepo, memberRepo, userRepo, storageSvc, notificationSvc };
-  };
-
-  it('UT_F06_01 – CANDIDATE đăng ký công ty mới thành công', async () => {
-    /**
-     * Test Case ID : UT_F06_01
-     * Test Objective: Ứng viên có thể đăng ký công ty mới, tài liệu được upload
-     * Input         : name="New Company", documentFile hợp lệ, user.role=CANDIDATE
-     * Expected Output: Công ty được tạo với status=PENDING; member OWNER được tạo
-     * Notes         : CheckDB – companyRepo.save() và memberRepo.save() phải được gọi 1 lần
-     *                 Rollback – mock; không thay đổi DB thực
-     */
-    const { companyRepo, memberRepo, userRepo, storageSvc, notificationSvc } = makeDeps();
-    const useCase = new RegisterCompanyUseCase(companyRepo, memberRepo, userRepo, storageSvc, notificationSvc);
-
-    const result = await useCase.execute({ userId: 'user-001', name: 'New Company', documentFile: dummyFile });
-
-    expect(result).toBeTruthy();
-    expect(companyRepo.save).toHaveBeenCalledTimes(1);
-    expect(memberRepo.save).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user-001', companyRole: CompanyRole.OWNER })
-    );
-    expect(storageSvc.uploadDocument).toHaveBeenCalledTimes(1);
-  });
-
-  it('UT_F06_02 – Thất bại khi user đã là RECRUITER', async () => {
-    /**
-     * Test Case ID : UT_F06_02
-     * Test Objective: RECRUITER không thể đăng ký thêm công ty
-     * Input         : user.role=RECRUITER
-     * Expected Output: ConflictError
-     * Notes         : CheckDB – companyRepo.save() KHÔNG được gọi
-     */
-    const { companyRepo, memberRepo, userRepo, storageSvc, notificationSvc } = makeDeps({ role: UserRole.RECRUITER });
-    const useCase = new RegisterCompanyUseCase(companyRepo, memberRepo, userRepo, storageSvc, notificationSvc);
-
-    await expect(useCase.execute({ userId: 'user-001', name: 'Test', documentFile: dummyFile }))
-      .rejects.toThrow(ConflictError);
-    expect(companyRepo.save).not.toHaveBeenCalled();
-  });
-
-  it('UT_F06_03 – Thất bại khi user là ADMIN', async () => {
-    /**
-     * Test Case ID : UT_F06_03
-     * Test Objective: ADMIN không thể đăng ký công ty
-     * Input         : user.role=ADMIN
-     * Expected Output: ConflictError "Tài khoản quản trị viên không thể đăng ký công ty"
-     */
-    const { companyRepo, memberRepo, userRepo, storageSvc, notificationSvc } = makeDeps({ role: UserRole.ADMIN });
-    const useCase = new RegisterCompanyUseCase(companyRepo, memberRepo, userRepo, storageSvc, notificationSvc);
-
-    await expect(useCase.execute({ userId: 'user-001', name: 'Test', documentFile: dummyFile }))
-      .rejects.toThrow(/quản trị viên/);
-  });
-
-  it('UT_F06_04 – Thất bại khi tên công ty đã tồn tại', async () => {
-    /**
-     * Test Case ID : UT_F06_04
-     * Test Objective: Không cho phép trùng tên công ty
-     * Input         : nameExists() trả về true
-     * Expected Output: ConflictError "Tên công ty đã tồn tại"
-     */
-    const { companyRepo, memberRepo, userRepo, storageSvc, notificationSvc } = makeDeps();
-    companyRepo.nameExists.mockResolvedValue(true);
-    const useCase = new RegisterCompanyUseCase(companyRepo, memberRepo, userRepo, storageSvc, notificationSvc);
-
-    await expect(useCase.execute({ userId: 'user-001', name: 'Existing Company', documentFile: dummyFile }))
-      .rejects.toThrow(/tên công ty/i);
-  });
-
-  it('UT_F06_05 – Thất bại khi không có file tài liệu', async () => {
-    /**
-     * Test Case ID : UT_F06_05
-     * Test Objective: Tài liệu đăng ký là bắt buộc
-     * Input         : documentFile=undefined
-     * Expected Output: ValidationError "Tài liệu đăng ký công ty là bắt buộc"
-     */
-    const { companyRepo, memberRepo, userRepo, storageSvc, notificationSvc } = makeDeps();
-    const useCase = new RegisterCompanyUseCase(companyRepo, memberRepo, userRepo, storageSvc, notificationSvc);
-
-    await expect(useCase.execute({ userId: 'user-001', name: 'Test' }))
-      .rejects.toThrow(ValidationError);
-  });
-
-  it('UT_F06_06 – Thất bại khi user đã có đơn chờ duyệt (PENDING)', async () => {
-    /**
-     * Test Case ID : UT_F06_06
-     * Test Objective: Không cho phép đăng ký nhiều công ty khi đang chờ duyệt
-     * Input         : existingMember với company.status=PENDING
-     * Expected Output: ConflictError "đang chờ xét duyệt"
-     */
-    const { companyRepo, memberRepo, userRepo, storageSvc, notificationSvc } = makeDeps();
-    memberRepo.findByUserId.mockResolvedValue({ companyId: 'old-company' });
-    companyRepo.findById.mockResolvedValue({ status: 'PENDING' });
-    const useCase = new RegisterCompanyUseCase(companyRepo, memberRepo, userRepo, storageSvc, notificationSvc);
-
-    await expect(useCase.execute({ userId: 'user-001', name: 'New', documentFile: dummyFile }))
-      .rejects.toThrow(/chờ xét duyệt/);
-  });
-});
-
-// =====================================================================
-// TEST SUITE: UpdateCompanyUseCase
-// =====================================================================
-describe('F06 - Cập nhật hồ sơ công ty | UpdateCompanyUseCase', () => {
-
-  it('UT_F06_07 – OWNER cập nhật thông tin công ty thành công', async () => {
-    /**
-     * Test Case ID : UT_F06_07
-     * Test Objective: Chủ công ty cập nhật thông tin hợp lệ
-     * Input         : userId="user-001", companyRole=OWNER, new name="Updated Company"
-     * Expected Output: update() được gọi; trả về thông tin mới
-     * Notes         : CheckDB – companyRepo.update() phải được gọi 1 lần
-     */
-    const companyData = buildCompany({ status: 'ACTIVE', name: 'Old Name' });
-    const updatedCompany = buildCompany({ name: 'Updated Company', status: 'ACTIVE' });
-    const companyRepo: jest.Mocked<ICompanyRepository> = {
-      nameExists: jest.fn().mockResolvedValue(false),
-      save: jest.fn(),
-      findById: jest.fn(),
-      findByIdWithMembers: jest.fn()
-        .mockResolvedValueOnce(companyData)    // for initial fetch
-        .mockResolvedValueOnce(updatedCompany), // after update
-      update: jest.fn().mockResolvedValue(updatedCompany),
-    };
-    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
-      findByUserId: jest.fn(),
-      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember({ companyRole: CompanyRole.OWNER })),
-      save: jest.fn(),
-      delete: jest.fn(),
-    };
-    const storageSvc: jest.Mocked<IStorageService> = {
-      uploadDocument: jest.fn(),
-      uploadImage: jest.fn(),
-      deleteFile: jest.fn(),
-    };
-    const useCase = new UpdateCompanyUseCase(companyRepo, memberRepo, storageSvc);
-
-    const result = await useCase.execute({
-      companyId: 'company-001',
-      userId: 'user-001',
-      name: 'Updated Company',
+    beforeEach(() => {
+        companyRepo = {
+            nameExists: jest.fn().mockResolvedValue(false),
+            save: jest.fn().mockResolvedValue(buildCompany({ status: UserStatus.PENDING })),
+            findById: jest.fn().mockResolvedValue(null),
+            findByIdWithMembers: jest.fn().mockResolvedValue(buildCompany({ status: UserStatus.PENDING }))
+        };
+        memberRepo = {
+            findByUserId: jest.fn().mockResolvedValue(null),
+            delete: jest.fn().mockResolvedValue(true),
+            save: jest.fn().mockResolvedValue(buildMember())
+        };
+        userRepo = {
+            findById: jest.fn().mockResolvedValue(buildUser()),
+            findAll: jest.fn().mockResolvedValue({ data: [buildUser({ id: 'admin-1', role: UserRole.ADMIN })] })
+        };
+        storageSvc = {
+            uploadDocument: jest.fn().mockResolvedValue('http://example.com/doc.pdf'),
+            uploadImage: jest.fn().mockResolvedValue('http://example.com/logo.png'),
+        };
+        notifySvc = {
+            createNotification: jest.fn().mockResolvedValue(true)
+        };
+        uc = new RegisterCompanyUseCase({
+            companyRepository: companyRepo, companyMemberRepository: memberRepo,
+            userRepository: userRepo, storageService: storageSvc, notificationService: notifySvc
+        });
     });
 
-    expect(companyRepo.update).toHaveBeenCalledWith('company-001', expect.objectContaining({ name: 'Updated Company' }));
-    expect(result.name).toBe('Updated Company');
-  });
+    const validInp = { ownerId: 'user-001', userId: 'user-001', name: 'Z company', documentFile: mockDocFile };
 
-  it('UT_F06_08 – Thất bại khi không phải member của công ty', async () => {
-    /**
-     * Test Case ID : UT_F06_08
-     * Test Objective: User không thuộc công ty không được cập nhật
-     * Input         : findByCompanyAndUser() trả về null
-     * Expected Output: AuthorizationError
-     */
-    const companyRepo: jest.Mocked<ICompanyRepository> = {
-      nameExists: jest.fn(),
-      save: jest.fn(),
-      findById: jest.fn(),
-      findByIdWithMembers: jest.fn().mockResolvedValue(buildCompany({ status: 'ACTIVE' })),
-      update: jest.fn(),
-    };
-    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
-      findByUserId: jest.fn(),
-      findByCompanyAndUser: jest.fn().mockResolvedValue(null),
-      save: jest.fn(),
-      delete: jest.fn(),
-    };
-    const storageSvc: jest.Mocked<IStorageService> = { uploadDocument: jest.fn(), uploadImage: jest.fn(), deleteFile: jest.fn() };
-    const useCase = new UpdateCompanyUseCase(companyRepo, memberRepo, storageSvc);
+    it('UT_F06_01 – Thành công đăng ký công ty mới cho CANDIDATE kèm thông báo cho ADMIN', async () => {
+        const res = await uc.execute(validInp);
+        expect(res.name).toBe('Tech Corp');
+        expect(companyRepo.save).toHaveBeenCalled();
+        expect(memberRepo.save).toHaveBeenCalledWith(expect.objectContaining({ companyRole: CompanyRole.OWNER }));
+        expect(notifySvc.createNotification).toHaveBeenCalled();
+    });
 
-    await expect(useCase.execute({ companyId: 'company-001', userId: 'other-user', name: 'Test' }))
-      .rejects.toThrow(AuthorizationError);
-    expect(companyRepo.update).not.toHaveBeenCalled();
-  });
+    it('UT_F06_02 – Fallback sử dụng ownerId khi truyền ownerId thay vì userId', async () => {
+        await uc.execute({ ownerId: 'user-002', name: 'ZZ', documentFile: mockDocFile });
+        expect(userRepo.findById).toHaveBeenCalledWith('user-002');
+    });
 
-  it('UT_F06_09 – Thất bại khi member có role thấp (MEMBER không phải OWNER/MANAGER)', async () => {
-    /**
-     * Test Case ID : UT_F06_09
-     * Test Objective: MEMBER thường không được phép cập nhật hồ sơ công ty
-     * Input         : companyRole=MEMBER
-     * Expected Output: AuthorizationError "Only owners and managers can update"
-     */
-    const companyRepo: jest.Mocked<ICompanyRepository> = {
-      nameExists: jest.fn(),
-      save: jest.fn(),
-      findById: jest.fn(),
-      findByIdWithMembers: jest.fn().mockResolvedValue(buildCompany({ status: 'ACTIVE' })),
-      update: jest.fn(),
-    };
-    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
-      findByUserId: jest.fn(),
-      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember({ companyRole: CompanyRole.MEMBER })),
-      save: jest.fn(),
-      delete: jest.fn(),
-    };
-    const storageSvc: jest.Mocked<IStorageService> = { uploadDocument: jest.fn(), uploadImage: jest.fn(), deleteFile: jest.fn() };
-    const useCase = new UpdateCompanyUseCase(companyRepo, memberRepo, storageSvc);
+    it('UT_F06_03 – Lỗi ValidationError khi người dùng (ownerId) không tồn tại trong DB', async () => {
+        userRepo.findById.mockResolvedValue(null);
+        await expect(uc.execute(validInp)).rejects.toThrow(ValidationError);
+    });
 
-    await expect(useCase.execute({ companyId: 'company-001', userId: 'user-001', name: 'Test' }))
-      .rejects.toThrow(/owners and managers/i);
-  });
+    it('UT_F06_04 – Lỗi ConflictError do tài khoản đã là RECRUITER', async () => {
+        userRepo.findById.mockResolvedValue(buildUser({ role: UserRole.RECRUITER }));
+        await expect(uc.execute(validInp)).rejects.toThrow(ConflictError);
+        await expect(uc.execute(validInp)).rejects.toThrow(/mỗi người dùng chỉ có thể quản lý một công ty/i);
+    });
+
+    it('UT_F06_05 – Lỗi ConflictError do người dùng là ADMIN (phân quyền hệ thống không thể làm owner)', async () => {
+        userRepo.findById.mockResolvedValue(buildUser({ role: UserRole.ADMIN }));
+        await expect(uc.execute(validInp)).rejects.toThrow(ConflictError);
+    });
+
+    it('UT_F06_06 – Cho phép đăng ký lại nếu đơn cũ đã bị từ chối/bị xoá (status != PENDING)', async () => {
+        memberRepo.findByUserId.mockResolvedValue(buildMember());
+        companyRepo.findById.mockResolvedValue(buildCompany({ status: UserStatus.LOCKED })); // aka Rejected
+        await uc.execute(validInp);
+        // Do có member cũ bị từ chối nên memberRepo.delete() được gọi để dọn dẹp data cũ
+        expect(memberRepo.delete).toHaveBeenCalled();
+        expect(companyRepo.save).toHaveBeenCalled();
+    });
+
+    it('UT_F06_07 – Thất bại do đang có một đơn chờ xét duyệt (PENDING)', async () => {
+        memberRepo.findByUserId.mockResolvedValue(buildMember());
+        companyRepo.findById.mockResolvedValue(buildCompany({ status: UserStatus.PENDING }));
+        await expect(uc.execute(validInp)).rejects.toThrow(ConflictError);
+    });
+
+    it('UT_F06_08 – Thất bại ConflictError vì trùng tên công ty', async () => {
+        companyRepo.nameExists.mockResolvedValue(true);
+        await expect(uc.execute(validInp)).rejects.toThrow(ConflictError);
+    });
+
+    it('UT_F06_09 – Thất bại tải tài liệu (thiếu documentFile)', async () => {
+        await expect(uc.execute({ ownerId: 'user-001', userId: 'user-001', name: 'Z', documentFile: undefined as any })).rejects.toThrow(ValidationError);
+    });
+
+    it('UT_F06_10 – Upload document lên storage thành công khi tạo công ty', async () => {
+        await uc.execute(validInp);
+        expect(storageSvc.uploadDocument).toHaveBeenCalledWith(mockDocFile.buffer, mockDocFile.originalname, mockDocFile.mimetype);
+    });
+
+    it('UT_F06_11 – Upload logo lên storage tự động nếu có tệp đính kèm logo', async () => {
+        await uc.execute({ ...validInp, logoFile: mockFile });
+        expect(storageSvc.uploadImage).toHaveBeenCalledWith(mockFile.buffer, mockFile.originalname, mockFile.mimetype, 'company-logos');
+    });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F06-B: UpdateCompanyUseCase (8 TC)
+// ═════════════════════════════════════════════════════════════════════════════
+describe('F06-B – UpdateCompanyUseCase', () => {
+    let uc: UpdateCompanyUseCase;
+    let companyRepo: any;
+    let memberRepo: any;
+    let storageSvc: any;
+
+    beforeEach(() => {
+        companyRepo = {
+            findByIdWithMembers: jest.fn().mockResolvedValue(buildCompany()),
+            update: jest.fn().mockResolvedValue(buildCompany()),
+            nameExists: jest.fn().mockResolvedValue(false)
+        };
+        memberRepo = { findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()) };
+        storageSvc = {
+            uploadImage: jest.fn().mockResolvedValue('http://new.com/img.png'),
+            deleteFile: jest.fn().mockResolvedValue(true)
+        };
+        uc = new UpdateCompanyUseCase({ companyRepository: companyRepo, companyMemberRepository: memberRepo, storageService: storageSvc });
+    });
+
+    const validInp = { companyId: 'company-001', userId: 'user-001', description: 'Hello' };
+
+    it('UT_F06_12 – OWNER update thông tin thường thành công', async () => {
+        const res = await uc.execute(validInp);
+        expect(res.id).toBe('company-001');
+        expect(companyRepo.update).toHaveBeenCalledWith('company-001', expect.objectContaining({ description: 'Hello' }));
+    });
+
+    it('UT_F06_13 – MANAGER có quyền cập nhật thông tin công ty', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: CompanyRole.MANAGER }));
+        await expect(uc.execute(validInp)).resolves.toBeDefined();
+    });
+
+
+    it('UT_F06_14 – Lỗi AuthorizationError khi RECRUITER cố gắng update', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: CompanyRole.RECRUITER }));
+        await expect(uc.execute(validInp)).rejects.toThrow(AuthorizationError);
+    });
+
+    it('UT_F06_15 – Lỗi AuthorizationError do user không có quyền thành viên (thành viên không hợp lệ)', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(null);
+        await expect(uc.execute(validInp)).rejects.toThrow(AuthorizationError);
+    });
+
+
+    it('UT_F06_16 – Thất bại ConflictError vì tên công ty mới đã bị sử dụng', async () => {
+        companyRepo.nameExists.mockResolvedValue(true);
+        await expect(uc.execute({ ...validInp, name: 'Brand New' })).rejects.toThrow(ConflictError);
+    });
+
+    it('UT_F06_17 – Update logo kèm upload hình mới và dọn dẹp file cũ thành công', async () => {
+        await uc.execute({ ...validInp, logoFile: mockFile });
+        expect(storageSvc.uploadImage).toHaveBeenCalledWith(mockFile.buffer, expect.any(String), expect.any(String), 'company-logos');
+        expect(companyRepo.update).toHaveBeenCalledWith('company-001', expect.objectContaining({ logoUrl: 'http://new.com/img.png' }));
+        expect(storageSvc.deleteFile).toHaveBeenCalledWith('http://example.com/logo.png'); // old file
+    });
+
+    it('UT_F06_18 – Update banner kèm upload banner mới và dọn dẹp hình cũ thành công', async () => {
+        await uc.execute({ ...validInp, bannerFile: mockFile });
+        expect(storageSvc.uploadImage).toHaveBeenCalledWith(mockFile.buffer, expect.any(String), expect.any(String), 'company-banners');
+        expect(companyRepo.update).toHaveBeenCalledWith('company-001', expect.objectContaining({ bannerUrl: 'http://new.com/img.png' }));
+        expect(storageSvc.deleteFile).toHaveBeenCalledWith('http://example.com/banner.png');
+    });
+
+    it('UT_F06_19 – Lỗi NotFoundError do companyId không tồn tại', async () => {
+        companyRepo.findByIdWithMembers.mockResolvedValue(null);
+        await expect(uc.execute(validInp)).rejects.toThrow(NotFoundError);
+    });
+
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F06-C: UploadLogoUseCase (6 TC)
+// ═════════════════════════════════════════════════════════════════════════════
+describe('F06-C – UploadLogoUseCase', () => {
+    let uc: UploadLogoUseCase;
+    let companyRepo: any;
+    let memberRepo: any;
+    let storageSvc: any;
+
+    beforeEach(() => {
+        companyRepo = {
+            findByIdWithoutMembers: jest.fn().mockResolvedValue(buildCompany({ logoUrl: 'old_logo.png' })),
+            update: jest.fn().mockResolvedValue(true)
+        };
+        memberRepo = { findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()) };
+        storageSvc = {
+            uploadImage: jest.fn().mockResolvedValue('new_logo.png'),
+            deleteFile: jest.fn().mockResolvedValue(true)
+        };
+        uc = new UploadLogoUseCase(companyRepo, memberRepo, storageSvc);
+    });
+
+    const validInp = { companyId: 'c1', userId: 'u1', file: mockFile };
+
+    it('UT_F06_20 – Upload Logo thành công trên tài khoản OWNER, gán logo mới vào DB', async () => {
+        const res = await uc.execute(validInp);
+        expect(res.logoUrl).toBe('new_logo.png');
+        expect(companyRepo.update).toHaveBeenCalledWith('c1', { logoUrl: 'new_logo.png' });
+    });
+
+    it('UT_F06_21 – Upload Logo thành công trên tài khoản MANAGER', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: CompanyRole.MANAGER }));
+        await expect(uc.execute(validInp)).resolves.toHaveProperty('logoUrl');
+    });
+
+    it('UT_F06_22 – Upload Logo thành công trên tài khoản RECRUITER', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: CompanyRole.RECRUITER }));
+        await expect(uc.execute(validInp)).resolves.toHaveProperty('logoUrl');
+    });
+
+
+    it('UT_F06_23 – Thất bại AuthorizationError do Role không được cấp quyền (MEMBER)', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: ('MEMBER' as any) }));
+        await expect(uc.execute(validInp)).rejects.toThrow(AuthorizationError);
+    });
+
+    it('UT_F06_24 – Thất bại NotFoundError khi cung cấp companyId null/không hợp lệ', async () => {
+        companyRepo.findByIdWithoutMembers.mockResolvedValue(null);
+        await expect(uc.execute(validInp)).rejects.toThrow(NotFoundError);
+    });
+
+
+    it('UT_F06_25 – Không ngắt tiến trình báo lỗi nền nếu Storage S3 thất bại', async () => {
+        storageSvc.deleteFile.mockRejectedValue(new Error('Background Error!'));
+        await expect(uc.execute(validInp)).resolves.toBeDefined();
+    });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F06-D: UploadBannerUseCase (6 TC)
+// ═════════════════════════════════════════════════════════════════════════════
+describe('F06-D – UploadBannerUseCase', () => {
+    let uc: UploadBannerUseCase;
+    let companyRepo: any;
+    let memberRepo: any;
+    let storageSvc: any;
+
+    beforeEach(() => {
+        companyRepo = {
+            findByIdWithoutMembers: jest.fn().mockResolvedValue(buildCompany({ bannerUrl: 'old_banner.png' })),
+            update: jest.fn().mockResolvedValue(true)
+        };
+        memberRepo = { findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()) };
+        storageSvc = {
+            uploadImage: jest.fn().mockResolvedValue('new_banner.png'),
+            deleteFile: jest.fn().mockResolvedValue(true)
+        };
+        uc = new UploadBannerUseCase(companyRepo, memberRepo, storageSvc);
+    });
+
+    const validInp = { companyId: 'c1', userId: 'u1', file: mockFile };
+
+    it('UT_F06_26 – Đăng tải Banner thành công bởi OWNER và gán URL vào company record', async () => {
+        const res = await uc.execute(validInp);
+        expect(res.bannerUrl).toBe('new_banner.png');
+        expect(companyRepo.update).toHaveBeenCalledWith('c1', { bannerUrl: 'new_banner.png' });
+    });
+
+    it('UT_F06_27 – Đăng tải Banner thành công bởi RECRUITER do có quyền hạn liên quan', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: CompanyRole.RECRUITER }));
+        const res = await uc.execute(validInp);
+        expect(res.bannerUrl).toBeDefined();
+    });
+
+    it('UT_F06_28 – Đăng tải Banner thành công bởi MANAGER', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: CompanyRole.MANAGER }));
+        await expect(uc.execute(validInp)).resolves.toBeDefined();
+    });
+
+
+    it('UT_F06_29 – Thất bại khi thành viên thường (MEMBER) thao tác cập nhật Banner', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(buildMember({ companyRole: ('MEMBER' as any) }));
+        await expect(uc.execute(validInp)).rejects.toThrow(AuthorizationError);
+    });
+
+    it('UT_F06_30 – Yêu cầu từ tài khoản không nằm trong công ty dẫn tới lỗi Authorization', async () => {
+        memberRepo.findByCompanyAndUser.mockResolvedValue(null);
+        await expect(uc.execute(validInp)).rejects.toThrow(AuthorizationError);
+    });
+
+    it('UT_F06_31 – Không tìm thấy hồ sơ doanh nghiệp (NotFoundError) cho ID rác/không tồn tại', async () => {
+        companyRepo.findByIdWithoutMembers.mockResolvedValue(null);
+        await expect(uc.execute(validInp)).rejects.toThrow(NotFoundError);
+    });
+
 });
