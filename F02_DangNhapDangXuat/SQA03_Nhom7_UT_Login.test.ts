@@ -14,65 +14,18 @@
  */
 
 // =====================================================================
-// INLINE TYPES & ERRORS
+// IMPORT FROM SOURCE FILE (enables Jest coverage measurement)
 // =====================================================================
-enum UserRole  { CANDIDATE = 'CANDIDATE', RECRUITER = 'RECRUITER', ADMIN = 'ADMIN' }
-enum UserStatus { ACTIVE = 'ACTIVE', LOCKED = 'LOCKED', PENDING = 'PENDING', SUSPENDED = 'SUSPENDED', INACTIVE = 'INACTIVE' }
-
-class AuthenticationError extends Error {
-  statusCode = 401;
-  constructor(message: string) { super(message); this.name = 'AuthenticationError'; }
-}
-class BusinessRuleError extends Error {
-  statusCode = 422;
-  constructor(message: string) { super(message); this.name = 'BusinessRuleError'; }
-}
-
-// =====================================================================
-// INLINE USE CASE
-// =====================================================================
-interface IUserRepository {
-  findByEmail(email: string): Promise<any | null>;
-  updateLastLogin(id: string): Promise<any>;
-}
-interface IPasswordService {
-  compare(plain: string, hash: string): Promise<boolean>;
-}
-interface ITokenService {
-  generate(payload: { userId: string; email: string; role: string }): string;
-  getExpiresIn(): string;
-}
-
-class LoginUserUseCase {
-  constructor(
-    private userRepository: IUserRepository,
-    private passwordService: IPasswordService,
-    private tokenService: ITokenService,
-  ) {}
-
-  async execute(input: { email: string; password: string }) {
-    const user = await this.userRepository.findByEmail(input.email);
-    if (!user) throw new AuthenticationError('Invalid email or password');
-
-    if (user.status !== UserStatus.ACTIVE) {
-      const messages: Record<string, string> = {
-        [UserStatus.LOCKED]:    'Tài khoản của bạn đã bị khóa. Vui lòng liên hệ quản trị viên.',
-        [UserStatus.SUSPENDED]: 'Tài khoản của bạn đã bị tạm ngưng. Vui lòng liên hệ quản trị viên.',
-        [UserStatus.INACTIVE]:  'Tài khoản của bạn không hoạt động. Vui lòng liên hệ quản trị viên.',
-        [UserStatus.PENDING]:   'Tài khoản của bạn đang chờ duyệt. Vui lòng liên hệ quản trị viên.',
-      };
-      throw new BusinessRuleError(messages[user.status] ?? 'Tài khoản không hoạt động.');
-    }
-
-    const isPasswordValid = await this.passwordService.compare(input.password, user.passwordHash);
-    if (!isPasswordValid) throw new AuthenticationError('Invalid email or password');
-
-    await this.userRepository.updateLastLogin(user.id);
-    const token = this.tokenService.generate({ userId: user.id, email: user.email, role: user.role });
-
-    return { user, token, expiresIn: this.tokenService.getExpiresIn() };
-  }
-}
+import {
+  UserRole,
+  UserStatus,
+  AuthenticationError,
+  BusinessRuleError,
+  ILoginUserRepository as IUserRepository,
+  IPasswordService,
+  ITokenService,
+  LoginUserUseCase,
+} from './F02.src';
 
 // =====================================================================
 // HELPERS
@@ -246,5 +199,140 @@ describe('F02 - Đăng nhập tài khoản | LoginUserUseCase', () => {
       email: 'user@example.com',
       role: UserRole.CANDIDATE,
     });
+  });
+
+  it('UT_F02_11 – tokenService.getExpiresIn() được gọi và kết quả trả về đúng', async () => {
+    /**
+     * Test Case ID : UT_F02_11
+     * Test Objective: Xác minh expiresIn được lấy từ tokenService và trả về trong response
+     * Input         : user hợp lệ, tokenSvc.getExpiresIn() trả về "7d"
+     * Expected Output: getExpiresIn() được gọi 1 lần; result.expiresIn === "7d"
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks();
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    const result = await useCase.execute({ email: 'user@example.com', password: 'correct_password' });
+
+    expect(tokenSvc.getExpiresIn).toHaveBeenCalledTimes(1);
+    expect(result.expiresIn).toBe('7d');
+  });
+
+  it('UT_F02_12 – passwordService.compare() được gọi với đúng plaintext và hash của user', async () => {
+    /**
+     * Test Case ID : UT_F02_12
+     * Test Objective: Xác minh so sánh mật khẩu sử dụng đúng cặp (plaintext, hash)
+     * Input         : password="correct_password", user.passwordHash="$2b$10$hashed"
+     * Expected Output: compare() được gọi với ("correct_password", "$2b$10$hashed")
+     * Notes         : Bảo mật – phải so sánh đúng cặp, không nhầm lẫn
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks();
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    await useCase.execute({ email: 'user@example.com', password: 'correct_password' });
+
+    expect(passwordSvc.compare).toHaveBeenCalledWith('correct_password', '$2b$10$hashed');
+  });
+
+  it('UT_F02_13 – findByEmail() được gọi đúng 1 lần với email được nhập', async () => {
+    /**
+     * Test Case ID : UT_F02_13
+     * Test Objective: Xác minh tra cứu user bằng email chính xác
+     * Input         : email="user@example.com"
+     * Expected Output: findByEmail() được gọi đúng 1 lần với "user@example.com"
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks();
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    await useCase.execute({ email: 'user@example.com', password: 'correct_password' });
+
+    expect(userRepo.findByEmail).toHaveBeenCalledTimes(1);
+    expect(userRepo.findByEmail).toHaveBeenCalledWith('user@example.com');
+  });
+
+  it('UT_F02_14 – passwordService.compare() KHÔNG được gọi khi tài khoản bị LOCKED', async () => {
+    /**
+     * Test Case ID : UT_F02_14
+     * Test Objective: Xác minh không tốn chi phí hash compare khi tài khoản bị khóa
+     * Input         : user.status=LOCKED
+     * Expected Output: BusinessRuleError; passwordSvc.compare() KHÔNG được gọi
+     * Notes         : Tối ưu bảo mật – không so sánh mật khẩu khi tài khoản không hợp lệ
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks({ status: UserStatus.LOCKED });
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    await expect(useCase.execute({ email: 'user@example.com', password: 'any' }))
+      .rejects.toThrow(BusinessRuleError);
+
+    expect(passwordSvc.compare).not.toHaveBeenCalled();
+  });
+
+  it('UT_F02_17 – Kết quả đăng nhập thành công trả về user object với đầy đủ trường', async () => {
+    /**
+     * Test Case ID : UT_F02_17
+     * Test Objective: Xác minh response có user object đầy đủ (id, email, role, status)
+     * Input         : Đăng nhập hợp lệ
+     * Expected Output: result.user có id="user-001", email="user@example.com", role, status
+     * Notes         : Đảm bảo client nhận đủ thông tin hiển thị sau khi đăng nhập
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks();
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    const result = await useCase.execute({ email: 'user@example.com', password: 'correct_password' });
+
+    expect(result.user).toHaveProperty('id', 'user-001');
+    expect(result.user).toHaveProperty('email', 'user@example.com');
+    expect(result.user).toHaveProperty('role');
+    expect(result.user).toHaveProperty('status');
+  });
+
+  it('UT_F02_18 – Token trả về là chuỗi không rỗng', async () => {
+    /**
+     * Test Case ID : UT_F02_18
+     * Test Objective: Xác minh token JWT được tạo ra và là chuỗi hợp lệ
+     * Input         : Đăng nhập hợp lệ
+     * Expected Output: result.token là string có độ dài > 0
+     * Notes         : Bảo mật – token phải tồn tại để client sử dụng các API khác
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks();
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    const result = await useCase.execute({ email: 'user@example.com', password: 'correct_password' });
+
+    expect(typeof result.token).toBe('string');
+    expect(result.token.length).toBeGreaterThan(0);
+  });
+
+  it('UT_F02_19 – updateLastLogin() KHÔNG được gọi khi tài khoản SUSPENDED', async () => {
+    /**
+     * Test Case ID : UT_F02_19
+     * Test Objective: Xác minh không cập nhật lastLogin khi tài khoản bị tạm ngưng
+     * Input         : user.status=SUSPENDED
+     * Expected Output: BusinessRuleError; userRepo.updateLastLogin() KHÔNG được gọi
+     * Notes         : Rollback – lastLoginAt phải giữ nguyên giá trị cũ trong DB
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks({ status: UserStatus.SUSPENDED });
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    await expect(useCase.execute({ email: 'user@example.com', password: 'any' }))
+      .rejects.toThrow(BusinessRuleError);
+
+    expect(userRepo.updateLastLogin).not.toHaveBeenCalled();
+  });
+
+  it('UT_F02_20 – updateLastLogin() KHÔNG được gọi khi tài khoản PENDING', async () => {
+    /**
+     * Test Case ID : UT_F02_20
+     * Test Objective: Xác minh không cập nhật lastLogin khi tài khoản chờ duyệt
+     * Input         : user.status=PENDING
+     * Expected Output: BusinessRuleError; userRepo.updateLastLogin() KHÔNG được gọi
+     * Notes         : Rollback – lastLoginAt phải giữ nguyên; tài khoản chưa được kích hoạt
+     */
+    const { userRepo, passwordSvc, tokenSvc } = makeMocks({ status: UserStatus.PENDING });
+    const useCase = new LoginUserUseCase(userRepo, passwordSvc, tokenSvc);
+
+    await expect(useCase.execute({ email: 'user@example.com', password: 'any' }))
+      .rejects.toThrow(BusinessRuleError);
+
+    expect(userRepo.updateLastLogin).not.toHaveBeenCalled();
   });
 });

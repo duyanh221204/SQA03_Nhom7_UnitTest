@@ -12,82 +12,16 @@
  */
 
 // =====================================================================
-// TYPE DEFINITIONS (extracted from source to avoid import path issues)
+// IMPORT FROM SOURCE FILE (enables Jest coverage measurement)
 // =====================================================================
-
-/** Enum vai trò người dùng */
-enum UserRole { CANDIDATE = 'CANDIDATE', RECRUITER = 'RECRUITER', ADMIN = 'ADMIN' }
-/** Enum trạng thái tài khoản */
-enum UserStatus { ACTIVE = 'ACTIVE', LOCKED = 'LOCKED', PENDING = 'PENDING', SUSPENDED = 'SUSPENDED', INACTIVE = 'INACTIVE' }
-
-// =====================================================================
-// DOMAIN ERROR CLASSES (inline – không import từ source)
-// =====================================================================
-class ConflictError extends Error {
-  statusCode = 409;
-  constructor(message: string) { super(message); this.name = 'ConflictError'; }
-}
-
-// =====================================================================
-// USE CASE UNDER TEST (inline implementation to avoid ESM path issues)
-// =====================================================================
-interface IUserRepository {
-  findByEmail(email: string): Promise<any | null>;
-  create(data: any): Promise<any>;
-}
-interface IPasswordService {
-  hash(password: string): Promise<string>;
-  compare(plain: string, hash: string): Promise<boolean>;
-  validate(password: string): { isValid: boolean; errors: string[] };
-}
-
-class RegisterUserUseCase {
-  constructor(
-    private readonly userRepository: IUserRepository,
-    private readonly passwordService: IPasswordService
-  ) {}
-
-  async execute(input: {
-    email: string;
-    password: string;
-    fullName?: string | null;
-    phoneNumber?: string | null;
-    gender?: string | null;
-    role?: string;
-    dateOfBirth?: Date | null;
-  }) {
-    const existingUser = await this.userRepository.findByEmail(input.email);
-    if (existingUser) throw new ConflictError('Email already exists');
-
-    const passwordHash = await this.passwordService.hash(input.password);
-
-    const user = await this.userRepository.create({
-      email: input.email,
-      passwordHash,
-      fullName: input.fullName ?? null,
-      phoneNumber: input.phoneNumber ?? null,
-      gender: input.gender ?? null,
-      role: input.role ?? UserRole.CANDIDATE,
-      dateOfBirth: input.dateOfBirth ?? null,
-      status: UserStatus.ACTIVE,
-      avatarUrl: null,
-    });
-
-    return {
-      id: user.id,
-      email: user.email,
-      fullName: user.fullName,
-      phoneNumber: user.phoneNumber,
-      gender: user.gender,
-      role: user.role,
-      dateOfBirth: user.dateOfBirth,
-      status: user.status,
-      avatarUrl: user.avatarUrl,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
-    };
-  }
-}
+import {
+  UserRole,
+  UserStatus,
+  ConflictError,
+  IUserRepository,
+  IPasswordService,
+  RegisterUserUseCase,
+} from './F01.src';
 
 // =====================================================================
 // HELPERS – factory functions for mock data
@@ -345,5 +279,312 @@ describe('F01 - Đăng ký tài khoản | RegisterUserUseCase', () => {
         avatarUrl: null,
       })
     );
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_08
+  // -------------------------------------------------------------------
+  it('UT_F01_08 – Đăng ký thành công với role=RECRUITER được chỉ định tường minh', async () => {
+    /**
+     * Test Case ID : UT_F01_08
+     * Test Objective: Xác minh role tùy chỉnh (RECRUITER) được lưu đúng khi truyền vào
+     * Input         : email="recruiter@example.com", role=RECRUITER
+     * Expected Output: create() nhận role=RECRUITER
+     * Notes         : CheckDB – role phải không bị ghi đè thành CANDIDATE
+     */
+    const userRepo = makeMockUserRepository({
+      create: jest.fn().mockResolvedValue(buildUser({ role: UserRole.RECRUITER })),
+    });
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    const result = await useCase.execute({
+      email: 'recruiter@example.com',
+      password: 'Password@1',
+      role: UserRole.RECRUITER,
+    });
+
+    expect(result.role).toBe(UserRole.RECRUITER);
+    expect(userRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ role: UserRole.RECRUITER })
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_09
+  // -------------------------------------------------------------------
+  it('UT_F01_09 – findByEmail() được gọi đúng 1 lần với email input', async () => {
+    /**
+     * Test Case ID : UT_F01_09
+     * Test Objective: Xác minh luôn kiểm tra trùng email trước khi tạo tài khoản
+     * Input         : email="check@example.com"
+     * Expected Output: findByEmail() được gọi đúng 1 lần với email="check@example.com"
+     * Notes         : CheckDB – không được bỏ qua bước kiểm tra email
+     */
+    const userRepo = makeMockUserRepository();
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    await useCase.execute({ email: 'check@example.com', password: 'Password@1' });
+
+    expect(userRepo.findByEmail).toHaveBeenCalledTimes(1);
+    expect(userRepo.findByEmail).toHaveBeenCalledWith('check@example.com');
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_10
+  // -------------------------------------------------------------------
+  it('UT_F01_10 – dateOfBirth hợp lệ được lưu đúng vào DB', async () => {
+    /**
+     * Test Case ID : UT_F01_10
+     * Test Objective: Xác minh trường dateOfBirth được truyền và lưu đúng
+     * Input         : dateOfBirth=new Date('1990-01-15')
+     * Expected Output: create() nhận dateOfBirth đúng; result.dateOfBirth khớp
+     * Notes         : CheckDB – dateOfBirth phải không bị null khi đã truyền
+     */
+    const dob = new Date('1990-01-15');
+    const userRepo = makeMockUserRepository({
+      create: jest.fn().mockResolvedValue(buildUser({ dateOfBirth: dob })),
+    });
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    const result = await useCase.execute({
+      email: 'dob@example.com',
+      password: 'Password@1',
+      dateOfBirth: dob,
+    });
+
+    expect(result.dateOfBirth).toEqual(dob);
+    expect(userRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ dateOfBirth: dob })
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_11
+  // -------------------------------------------------------------------
+  it('UT_F01_11 – avatarUrl luôn là null khi đăng ký tài khoản mới', async () => {
+    /**
+     * Test Case ID : UT_F01_11
+     * Test Objective: Xác minh avatarUrl mặc định null tại thời điểm đăng ký
+     * Input         : Bất kỳ dữ liệu hợp lệ nào (không truyền avatarUrl)
+     * Expected Output: create() nhận avatarUrl=null; result.avatarUrl===null
+     */
+    const userRepo = makeMockUserRepository();
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    const result = await useCase.execute({
+      email: 'avatar@example.com',
+      password: 'Password@1',
+    });
+
+    expect(result.avatarUrl).toBeNull();
+    expect(userRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ avatarUrl: null })
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_12
+  // -------------------------------------------------------------------
+  it('UT_F01_12 – passwordService.hash() KHÔNG được gọi khi email đã tồn tại', async () => {
+    /**
+     * Test Case ID : UT_F01_12
+     * Test Objective: Xác minh không lãng phí tài nguyên hash khi email trùng
+     * Input         : email trùng (findByEmail trả về user đã tồn tại)
+     * Expected Output: ConflictError; passwordService.hash() KHÔNG được gọi
+     * Notes         : Tối ưu hiệu năng – không hash khi đã biết thất bại
+     */
+    const existingUser = buildUser({ email: 'existing2@example.com' });
+    const userRepo = makeMockUserRepository({
+      findByEmail: jest.fn().mockResolvedValue(existingUser),
+    });
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    await expect(
+      useCase.execute({ email: 'existing2@example.com', password: 'Password@1' })
+    ).rejects.toThrow(ConflictError);
+
+    expect(passwordSvc.hash).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_13
+  // -------------------------------------------------------------------
+  it('UT_F01_13 – Email có chữ hoa được lưu đúng theo giá trị input gốc', async () => {
+    /**
+     * Test Case ID : UT_F01_13
+     * Test Objective: Xác minh email có chữ hoa không bị biến đổi (lowercase) khi lưu
+     * Input         : email="User@Example.COM"
+     * Expected Output: create() nhận email="User@Example.COM" (không đổi thành chữ thường)
+     * Notes         : CheckDB – email được lưu đúng theo giá trị truyền vào
+     */
+    const userRepo = makeMockUserRepository({
+      create: jest.fn().mockResolvedValue(buildUser({ email: 'User@Example.COM' })),
+    });
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    await useCase.execute({ email: 'User@Example.COM', password: 'Password@1' });
+
+    expect(userRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ email: 'User@Example.COM' })
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_14
+  // -------------------------------------------------------------------
+  it('UT_F01_14 – Kết quả đăng ký trả về đầy đủ các trường cần thiết (id, email, role, status)', async () => {
+    /**
+     * Test Case ID : UT_F01_14
+     * Test Objective: Xác minh response đăng ký không thiếu trường nào cần thiết
+     * Input         : Đăng ký hợp lệ với email và password
+     * Expected Output: result có property id, email, role, status, createdAt, updatedAt
+     * Notes         : Đảm bảo API trả về đủ dữ liệu cho client hiển thị
+     */
+    const userRepo = makeMockUserRepository();
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    const result = await useCase.execute({ email: 'fields@example.com', password: 'Password@1' });
+
+    expect(result).toHaveProperty('id');
+    expect(result).toHaveProperty('email');
+    expect(result).toHaveProperty('role');
+    expect(result).toHaveProperty('status');
+    expect(result).toHaveProperty('createdAt');
+    expect(result).toHaveProperty('updatedAt');
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_15
+  // -------------------------------------------------------------------
+  it('UT_F01_15 – userRepository.create() chỉ được gọi đúng 1 lần mỗi lượt đăng ký', async () => {
+    /**
+     * Test Case ID : UT_F01_15
+     * Test Objective: Xác minh không có vòng lặp/retry tạo tài khoản không cần thiết
+     * Input         : Đăng ký hợp lệ với email mới
+     * Expected Output: userRepo.create() được gọi đúng 1 lần (không nhiều hơn)
+     * Notes         : Rollback – gọi nhiều lần sẽ tạo nhiều bản ghi trùng lặp trong DB
+     */
+    const userRepo = makeMockUserRepository();
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    await useCase.execute({ email: 'once@example.com', password: 'Password@1' });
+
+    expect(userRepo.create).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_16
+  // -------------------------------------------------------------------
+  it('UT_F01_16 – createdAt và updatedAt trong kết quả khớp với dữ liệu từ repository', async () => {
+    /**
+     * Test Case ID : UT_F01_16
+     * Test Objective: Xác minh timestamp được lấy từ repository, không phải tạo lại
+     * Input         : repository trả về createdAt=2024-06-01, updatedAt=2024-06-01
+     * Expected Output: result.createdAt và result.updatedAt đúng bằng giá trị từ repo
+     * Notes         : CheckDB – timestamp phải đồng nhất giữa DB và response
+     */
+    const now = new Date('2024-06-01T00:00:00.000Z');
+    const userRepo = makeMockUserRepository({
+      create: jest.fn().mockResolvedValue(buildUser({ createdAt: now, updatedAt: now })),
+    });
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    const result = await useCase.execute({ email: 'time@example.com', password: 'Password@1' });
+
+    expect(result.createdAt).toEqual(now);
+    expect(result.updatedAt).toEqual(now);
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_17
+  // -------------------------------------------------------------------
+  it('UT_F01_17 – passwordService.hash() được gọi đúng 1 lần với password input gốc', async () => {
+    /**
+     * Test Case ID : UT_F01_17
+     * Test Objective: Xác minh hash chỉ thực hiện 1 lần và không bị thay đổi input
+     * Input         : password="Password@1"
+     * Expected Output: passwordSvc.hash() gọi đúng 1 lần với "Password@1"
+     * Notes         : Bảo mật – hash nhiều lần hoặc hash sai input gây lỗi đăng nhập sau này
+     */
+    const userRepo = makeMockUserRepository();
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    await useCase.execute({ email: 'hashcheck@example.com', password: 'Password@1' });
+
+    expect(passwordSvc.hash).toHaveBeenCalledTimes(1);
+    expect(passwordSvc.hash).toHaveBeenCalledWith('Password@1');
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_18
+  // -------------------------------------------------------------------
+  it('UT_F01_18 – fullName mặc định null khi không được cung cấp', async () => {
+    /**
+     * Test Case ID : UT_F01_18
+     * Test Objective: Xác minh fullName không bắt buộc và mặc định là null khi đăng ký
+     * Input         : { email: 'nofullname@example.com', password: 'Password@1' } (không có fullName)
+     * Expected Output: userRepo.create() được gọi với fullName: null
+     * Notes         : CheckDB – trường fullName phải nullable trong DB
+     */
+    const userRepo = makeMockUserRepository({
+      create: jest.fn().mockResolvedValue(buildUser({ fullName: null })),
+    });
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    const result = await useCase.execute({ email: 'nofullname@example.com', password: 'Password@1' });
+
+    expect(result.fullName).toBeNull();
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_19
+  // -------------------------------------------------------------------
+  it('UT_F01_19 – avatarUrl mặc định null sau khi đăng ký thành công', async () => {
+    /**
+     * Test Case ID : UT_F01_19
+     * Test Objective: Xác minh avatarUrl mặc định null (chưa có ảnh) khi tài khoản mới tạo
+     * Input         : Đăng ký hợp lệ không truyền avatarUrl
+     * Expected Output: result.avatarUrl === null
+     * Notes         : CheckDB – avatarUrl nullable, chưa upload ảnh đại diện lúc đăng ký
+     */
+    const userRepo = makeMockUserRepository();
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    const result = await useCase.execute({ email: 'noavatar@example.com', password: 'Password@1' });
+
+    expect(result.avatarUrl).toBeNull();
+  });
+
+  // -------------------------------------------------------------------
+  // Test Case UT_F01_20
+  // -------------------------------------------------------------------
+  it('UT_F01_20 – userRepository.findByEmail() được gọi đúng với email input gốc', async () => {
+    /**
+     * Test Case ID : UT_F01_20
+     * Test Objective: Xác minh use case kiểm tra email trùng lặp trước khi tạo tài khoản
+     * Input         : email="checkdup@example.com"
+     * Expected Output: userRepo.findByEmail() được gọi đúng 1 lần với "checkdup@example.com"
+     * Notes         : CheckDB – phải query DB để kiểm tra email tồn tại trước khi insert
+     */
+    const userRepo = makeMockUserRepository();
+    const passwordSvc = makeMockPasswordService();
+    const useCase = new RegisterUserUseCase(userRepo, passwordSvc);
+
+    await useCase.execute({ email: 'checkdup@example.com', password: 'Password@1' });
+
+    expect(userRepo.findByEmail).toHaveBeenCalledTimes(1);
+    expect(userRepo.findByEmail).toHaveBeenCalledWith('checkdup@example.com');
   });
 });

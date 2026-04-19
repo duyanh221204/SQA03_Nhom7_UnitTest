@@ -17,131 +17,19 @@
  */
 
 // =====================================================================
-// INLINE TYPES & ERRORS
+// IMPORT FROM SOURCE FILE (enables Jest coverage measurement)
 // =====================================================================
-enum UserRole { CANDIDATE = 'CANDIDATE', RECRUITER = 'RECRUITER', ADMIN = 'ADMIN' }
-
-enum ApplicationStatus {
-  PENDING   = 'PENDING',
-  REVIEWING = 'REVIEWING',
-  ACCEPTED  = 'ACCEPTED',
-  REJECTED  = 'REJECTED',
-  CANCELLED = 'CANCELLED',
-}
-
-class AuthorizationError extends Error {
-  statusCode = 403;
-  constructor(msg: string) { super(msg); this.name = 'AuthorizationError'; }
-}
-class NotFoundError extends Error {
-  statusCode = 404;
-  constructor(msg: string) { super(msg); this.name = 'NotFoundError'; }
-}
-
-// =====================================================================
-// INLINE USE CASES
-// =====================================================================
-interface IApplicationRepository {
-  findByJobId(jobId: string, opts: any): Promise<{ data: any[]; pagination: any }>;
-  findByIdWithRelations(id: string): Promise<any | null>;
-  update(id: string, data: any): Promise<any>;
-}
-interface IJobRepository {
-  findById(id: string): Promise<any | null>;
-}
-interface ICompanyMemberRepository {
-  findByCompanyAndUser(companyId: string, userId: string): Promise<any | null>;
-}
-
-class GetApplicationsByJobUseCase {
-  constructor(
-    private appRepo: IApplicationRepository,
-    private jobRepo: IJobRepository,
-    private memberRepo: ICompanyMemberRepository,
-  ) {}
-
-  async execute(input: {
-    jobId: string;
-    userId: string;
-    userRole: string;
-    page?: number;
-    limit?: number;
-    status?: string;
-  }) {
-    const job = await this.jobRepo.findById(input.jobId);
-    if (!job) throw new Error('Job not found');
-
-    const isAdmin = input.userRole === UserRole.ADMIN;
-    if (!isAdmin) {
-      const member = await this.memberRepo.findByCompanyAndUser(job.companyId, input.userId);
-      if (!member)
-        throw new AuthorizationError('You do not have permission to view applications for this job');
-    }
-
-    const result = await this.appRepo.findByJobId(input.jobId, {
-      page: input.page ?? 1,
-      limit: input.limit ?? 10,
-      status: input.status,
-      includeRelations: true,
-    });
-
-    return { data: result.data, pagination: result.pagination };
-  }
-}
-
-class UpdateApplicationStatusUseCase {
-  constructor(
-    private appRepo: IApplicationRepository,
-    private jobRepo: IJobRepository,
-    private memberRepo: ICompanyMemberRepository,
-  ) {}
-
-  private isValidTransition(current: ApplicationStatus, next: ApplicationStatus): boolean {
-    const transitions: Record<ApplicationStatus, ApplicationStatus[]> = {
-      [ApplicationStatus.PENDING]:   [ApplicationStatus.REVIEWING, ApplicationStatus.ACCEPTED, ApplicationStatus.REJECTED, ApplicationStatus.CANCELLED],
-      [ApplicationStatus.REVIEWING]: [ApplicationStatus.ACCEPTED, ApplicationStatus.REJECTED, ApplicationStatus.CANCELLED],
-      [ApplicationStatus.ACCEPTED]:  [],
-      [ApplicationStatus.REJECTED]:  [],
-      [ApplicationStatus.CANCELLED]: [],
-    };
-    return transitions[current]?.includes(next) ?? false;
-  }
-
-  async execute(input: {
-    applicationId: string;
-    userId: string;
-    userRole: string;
-    status: ApplicationStatus;
-    notes?: string;
-  }) {
-    const application = await this.appRepo.findByIdWithRelations(input.applicationId);
-    if (!application) throw new NotFoundError('Application not found');
-
-    const isAdmin = input.userRole === UserRole.ADMIN;
-
-    if (!isAdmin) {
-      if (input.userRole !== UserRole.RECRUITER)
-        throw new AuthorizationError('Only recruiters and admins can update application status');
-
-      const job = await this.jobRepo.findById(application.jobId);
-      if (!job) throw new NotFoundError('Job not found');
-
-      const member = await this.memberRepo.findByCompanyAndUser(job.companyId, input.userId);
-      if (!member)
-        throw new AuthorizationError('You must be a member of the company that owns this job');
-    }
-
-    if (!this.isValidTransition(application.status, input.status))
-      throw new Error(`Invalid status transition from ${application.status} to ${input.status}`);
-
-    const updated = await this.appRepo.update(input.applicationId, {
-      status: input.status,
-      notes: input.notes,
-    });
-
-    return await this.appRepo.findByIdWithRelations(updated.id);
-  }
-}
+import {
+  UserRole,
+  ApplicationStatus,
+  AuthorizationError,
+  NotFoundError,
+  IApplicationRepository,
+  IJobRepository,
+  ICompanyMemberRepository,
+  GetApplicationsByJobUseCase,
+  UpdateApplicationStatusUseCase,
+} from './F12.src';
 
 // =====================================================================
 // HELPERS
@@ -476,5 +364,520 @@ describe('F12 - Cập nhật trạng thái đơn ứng tuyển | UpdateApplicati
       status: ApplicationStatus.REVIEWING,
       notes: 'Ứng viên phù hợp yêu cầu',
     }));
+  });
+
+  it('UT_F12_13 – Chuyển trạng thái REVIEWING → ACCEPTED hợp lệ', async () => {
+    /**
+     * Test Case ID : UT_F12_13
+     * Test Objective: Chuyển trạng thái từ REVIEWING sang ACCEPTED là hợp lệ
+     * Input         : currentStatus=REVIEWING, newStatus=ACCEPTED, userRole=RECRUITER
+     * Expected Output: update() được gọi với status=ACCEPTED
+     * Notes         : CheckDB – update() gọi 1 lần
+     */
+    const { appRepo, jobRepo, memberRepo } = makeDeps({ status: ApplicationStatus.REVIEWING });
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.ACCEPTED,
+    });
+
+    expect(appRepo.update).toHaveBeenCalledWith(
+      'app-001', expect.objectContaining({ status: ApplicationStatus.ACCEPTED })
+    );
+  });
+
+  it('UT_F12_14 – Chuyển trạng thái REVIEWING → REJECTED hợp lệ', async () => {
+    /**
+     * Test Case ID : UT_F12_14
+     * Test Objective: Chuyển trạng thái từ REVIEWING sang REJECTED là hợp lệ
+     * Input         : currentStatus=REVIEWING, newStatus=REJECTED
+     * Expected Output: update() được gọi với status=REJECTED
+     */
+    const { appRepo, jobRepo, memberRepo } = makeDeps({ status: ApplicationStatus.REVIEWING });
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.REJECTED,
+    });
+
+    expect(appRepo.update).toHaveBeenCalledWith(
+      'app-001', expect.objectContaining({ status: ApplicationStatus.REJECTED })
+    );
+  });
+
+  it('UT_F12_15 – Chuyển trạng thái PENDING → CANCELLED hợp lệ', async () => {
+    /**
+     * Test Case ID : UT_F12_15
+     * Test Objective: RECRUITER có thể huỷ đơn từ trạng thái PENDING
+     * Input         : currentStatus=PENDING, newStatus=CANCELLED
+     * Expected Output: update() được gọi với status=CANCELLED
+     */
+    const { appRepo, jobRepo, memberRepo } = makeDeps({ status: ApplicationStatus.PENDING });
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.CANCELLED,
+    });
+
+    expect(appRepo.update).toHaveBeenCalledWith(
+      'app-001', expect.objectContaining({ status: ApplicationStatus.CANCELLED })
+    );
+  });
+
+  it('UT_F12_16 – Thất bại khi chuyển trạng thái REJECTED → CANCELLED (bất hợp lệ)', async () => {
+    /**
+     * Test Case ID : UT_F12_16
+     * Test Objective: Không cho phép chuyển trạng thái từ trạng thái cuối REJECTED
+     * Input         : currentStatus=REJECTED, newStatus=CANCELLED
+     * Expected Output: Error "Invalid status transition from REJECTED to CANCELLED"
+     * Notes         : CheckDB – update() KHÔNG được gọi
+     */
+    const { appRepo, jobRepo, memberRepo } = makeDeps({ status: ApplicationStatus.REJECTED });
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await expect(useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.CANCELLED,
+    })).rejects.toThrow(/Invalid status transition/);
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+  });
+});
+
+// =====================================================================
+// TEST SUITE: GetApplicationsByJobUseCase – additional
+// =====================================================================
+describe('F12 - Xem danh sách đơn theo job – nâng cao | GetApplicationsByJobUseCase', () => {
+
+  it('UT_F12_17 – Phân trang mặc định page=1, limit=10 khi không truyền', async () => {
+    /**
+     * Test Case ID : UT_F12_17
+     * Test Objective: Xác minh giá trị phân trang mặc định trong GetApplicationsByJobUseCase
+     * Input         : jobId="job-001", userRole=ADMIN (không truyền page/limit)
+     * Expected Output: findByJobId() nhận page=1, limit=10
+     */
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn().mockResolvedValue({ data: [], pagination: buildPagination() }),
+      findByIdWithRelations: jest.fn(),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = {
+      findById: jest.fn().mockResolvedValue(buildJob()),
+    };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn(),
+    };
+    const useCase = new GetApplicationsByJobUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({ jobId: 'job-001', userId: 'admin-001', userRole: UserRole.ADMIN });
+
+    expect(appRepo.findByJobId).toHaveBeenCalledWith(
+      'job-001',
+      expect.objectContaining({ page: 1, limit: 10 })
+    );
+  });
+
+  it('UT_F12_18 – Lọc danh sách đơn theo status trong GetApplicationsByJobUseCase', async () => {
+    /**
+     * Test Case ID : UT_F12_18
+     * Test Objective: Xác minh bộ lọc status được truyền đến repository khi xem đơn theo job
+     * Input         : jobId="job-001", userRole=ADMIN, status=REVIEWING
+     * Expected Output: findByJobId() nhận options có status=REVIEWING
+     */
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn().mockResolvedValue({ data: [], pagination: buildPagination() }),
+      findByIdWithRelations: jest.fn(),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = {
+      findById: jest.fn().mockResolvedValue(buildJob()),
+    };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn(),
+    };
+    const useCase = new GetApplicationsByJobUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({
+      jobId: 'job-001',
+      userId: 'admin-001',
+      userRole: UserRole.ADMIN,
+      status: ApplicationStatus.REVIEWING,
+    });
+
+    expect(appRepo.findByJobId).toHaveBeenCalledWith(
+      'job-001',
+      expect.objectContaining({ status: ApplicationStatus.REVIEWING })
+    );
+  });
+
+  it('UT_F12_19 – Kết quả xem đơn theo job có đầy đủ pagination', async () => {
+    /**
+     * Test Case ID : UT_F12_19
+     * Test Objective: Xác minh pagination được trả về chính xác từ repository
+     * Input         : jobId="job-001", userRole=ADMIN; repository trả về pagination có total=3
+     * Expected Output: result.pagination = { page:1, limit:10, total:3, totalPages:1 }
+     * Notes         : Client cần pagination để điều hướng danh sách đơn ứng tuyển
+     */
+    const pagination = { page: 1, limit: 10, total: 3, totalPages: 1 };
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn().mockResolvedValue({ data: [], pagination }),
+      findByIdWithRelations: jest.fn(),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = {
+      findById: jest.fn().mockResolvedValue(buildJob()),
+    };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn(),
+    };
+    const useCase = new GetApplicationsByJobUseCase(appRepo, jobRepo, memberRepo);
+
+    const result = await useCase.execute({ jobId: 'job-001', userId: 'admin-001', userRole: UserRole.ADMIN });
+
+    expect(result.pagination).toEqual(pagination);
+  });
+
+  it('UT_F12_20 – findByIdWithRelations() được gọi 2 lần trong UpdateApplicationStatusUseCase thành công', async () => {
+    /**
+     * Test Case ID : UT_F12_20
+     * Test Objective: Xác minh sau khi update(), hệ thống tải lại dữ liệu mới nhất từ DB
+     * Input         : applicationId="app-001", status PENDING→REVIEWING, userRole=RECRUITER
+     * Expected Output: findByIdWithRelations() được gọi đúng 2 lần
+     * Notes         : CheckDB – lần gọi thứ 2 xác nhận DB đã cập nhật đúng
+     */
+    const app = buildApplication({ status: ApplicationStatus.PENDING });
+    const updatedApp = buildApplication({ status: ApplicationStatus.REVIEWING });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn().mockResolvedValueOnce(app).mockResolvedValueOnce(updatedApp),
+      update: jest.fn().mockResolvedValue(updatedApp),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()),
+    };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.REVIEWING,
+    });
+
+    expect(appRepo.findByIdWithRelations).toHaveBeenCalledTimes(2);
+  });
+
+  it('UT_F12_21 – Chuyển trạng thái REVIEWING → CANCELLED hợp lệ', async () => {
+    /**
+     * Test Case ID : UT_F12_21
+     * Test Objective: Xác minh REVIEWING→CANCELLED là chuyển trạng thái hợp lệ
+     * Input         : applicationId="app-001", status=CANCELLED, current=REVIEWING, userRole=RECRUITER
+     * Expected Output: update() được gọi với status=CANCELLED
+     * Notes         : CheckDB – nhà tuyển dụng có quyền hủy đơn đang xem xét
+     */
+    const app = buildApplication({ status: ApplicationStatus.REVIEWING });
+    const cancelledApp = buildApplication({ status: ApplicationStatus.CANCELLED });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn().mockResolvedValueOnce(app).mockResolvedValueOnce(cancelledApp),
+      update: jest.fn().mockResolvedValue(cancelledApp),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()),
+    };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.CANCELLED,
+    });
+
+    expect(appRepo.update).toHaveBeenCalledWith('app-001', expect.objectContaining({ status: ApplicationStatus.CANCELLED }));
+  });
+
+  it('UT_F12_22 – Thất bại khi chuyển trạng thái ACCEPTED → PENDING (bất hợp lệ)', async () => {
+    /**
+     * Test Case ID : UT_F12_22
+     * Test Objective: Xác minh trạng thái cuối (ACCEPTED) không thể chuyển ngược
+     * Input         : applicationId="app-001", current=ACCEPTED, target=PENDING
+     * Expected Output: Ném lỗi "Invalid status transition"; update() KHÔNG được gọi
+     * Notes         : Rollback – DB phải giữ nguyên trạng thái ACCEPTED
+     */
+    const app = buildApplication({ status: ApplicationStatus.ACCEPTED });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn().mockResolvedValue(app),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()),
+    };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await expect(
+      useCase.execute({
+        applicationId: 'app-001',
+        userId: 'recruiter-001',
+        userRole: UserRole.RECRUITER,
+        status: ApplicationStatus.PENDING,
+      })
+    ).rejects.toThrow(/Invalid status transition/);
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('UT_F12_23 – Phân trang tùy chỉnh (page=3, limit=5) được truyền đúng đến repository', async () => {
+    /**
+     * Test Case ID : UT_F12_23
+     * Test Objective: Xác minh phân trang tùy chỉnh được truyền đúng đến findByJobId()
+     * Input         : jobId="job-001", userRole=ADMIN, page=3, limit=5
+     * Expected Output: findByJobId() nhận options có page=3 và limit=5
+     * Notes         : CheckDB – phân trang sai sẽ lấy sai tập dữ liệu từ DB
+     */
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn().mockResolvedValue({ data: [], pagination: buildPagination() }),
+      findByIdWithRelations: jest.fn(),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = {
+      findById: jest.fn().mockResolvedValue(buildJob()),
+    };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn(),
+    };
+    const useCase = new GetApplicationsByJobUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({ jobId: 'job-001', userId: 'admin-001', userRole: UserRole.ADMIN, page: 3, limit: 5 });
+
+    expect(appRepo.findByJobId).toHaveBeenCalledWith(
+      'job-001',
+      expect.objectContaining({ page: 3, limit: 5 })
+    );
+  });
+
+  it('UT_F12_24 – CANDIDATE bị từ chối khi cố cập nhật trạng thái đơn ứng tuyển', async () => {
+    /**
+     * Test Case ID : UT_F12_24
+     * Test Objective: Xác minh phân quyền – CANDIDATE không được dùng UpdateApplicationStatus
+     * Input         : userRole=CANDIDATE, applicationId="app-001"
+     * Expected Output: AuthorizationError; update() KHÔNG được gọi
+     * Notes         : Bảo mật – ứng viên không tự thay đổi trạng thái đơn của mình qua API này
+     */
+    const app = buildApplication({ status: ApplicationStatus.PENDING });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn().mockResolvedValue(app),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn() };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = { findByCompanyAndUser: jest.fn() };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await expect(
+      useCase.execute({
+        applicationId: 'app-001',
+        userId: 'candidate-001',
+        userRole: UserRole.CANDIDATE,
+        status: ApplicationStatus.REVIEWING,
+      })
+    ).rejects.toThrow(AuthorizationError);
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('UT_F12_25 – Kết quả UpdateApplicationStatus trả về đơn mới nhất từ DB', async () => {
+    /**
+     * Test Case ID : UT_F12_25
+     * Test Objective: Xác minh response là dữ liệu tươi nhất sau khi cập nhật thành công
+     * Input         : PENDING → REVIEWING hợp lệ
+     * Expected Output: Kết quả có status=REVIEWING (từ lần gọi findByIdWithRelations thứ 2)
+     * Notes         : CheckDB – client cần nhận đúng trạng thái mới nhất
+     */
+    const app = buildApplication({ status: ApplicationStatus.PENDING });
+    const reviewingApp = buildApplication({ status: ApplicationStatus.REVIEWING });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn()
+        .mockResolvedValueOnce(app)
+        .mockResolvedValueOnce(reviewingApp),
+      update: jest.fn().mockResolvedValue(reviewingApp),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()),
+    };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    const result = await useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.REVIEWING,
+    });
+
+    expect(result).toBeDefined();
+    expect(result.status).toBe(ApplicationStatus.REVIEWING);
+  });
+
+  it('UT_F12_26 – includeRelations=true được truyền vào findByJobId() trong GetApplicationsByJobUseCase', async () => {
+    /**
+     * Test Case ID : UT_F12_26
+     * Test Objective: Xác minh dữ liệu liên quan (job, candidate) luôn được tải cùng danh sách đơn
+     * Input         : jobId="job-001", userRole=ADMIN
+     * Expected Output: findByJobId() nhận options có includeRelations=true
+     * Notes         : CheckDB – thiếu includeRelations sẽ trả về đơn thiếu thông tin
+     */
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn().mockResolvedValue({ data: [], pagination: buildPagination() }),
+      findByIdWithRelations: jest.fn(),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = { findByCompanyAndUser: jest.fn() };
+    const useCase = new GetApplicationsByJobUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({ jobId: 'job-001', userId: 'admin-001', userRole: UserRole.ADMIN });
+
+    expect(appRepo.findByJobId).toHaveBeenCalledWith(
+      'job-001',
+      expect.objectContaining({ includeRelations: true })
+    );
+  });
+
+  it('UT_F12_27 – ACCEPTED → REVIEWING bất hợp lệ, update() không được gọi', async () => {
+    /**
+     * Test Case ID : UT_F12_27
+     * Test Objective: Xác minh đơn đã ACCEPTED không thể chuyển về REVIEWING
+     * Input         : current=ACCEPTED, target=REVIEWING
+     * Expected Output: Ném lỗi "Invalid status transition"; update() không được gọi
+     * Notes         : Rollback – DB phải giữ nguyên trạng thái ACCEPTED
+     */
+    const app = buildApplication({ status: ApplicationStatus.ACCEPTED });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn().mockResolvedValue(app),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()),
+    };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await expect(
+      useCase.execute({
+        applicationId: 'app-001',
+        userId: 'recruiter-001',
+        userRole: UserRole.RECRUITER,
+        status: ApplicationStatus.REVIEWING,
+      })
+    ).rejects.toThrow(/Invalid status transition/);
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('UT_F12_28 – CANCELLED → bất kỳ trạng thái nào đều bất hợp lệ (CANCELLED → PENDING)', async () => {
+    /**
+     * Test Case ID : UT_F12_28
+     * Test Objective: Xác minh đơn đã CANCELLED là trạng thái cuối, không thể phục hồi
+     * Input         : current=CANCELLED, target=PENDING
+     * Expected Output: Ném lỗi "Invalid status transition"; update() không được gọi
+     * Notes         : Rollback – trạng thái CANCELLED là không thể đảo ngược
+     */
+    const app = buildApplication({ status: ApplicationStatus.CANCELLED });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn().mockResolvedValue(app),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()),
+    };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await expect(
+      useCase.execute({
+        applicationId: 'app-001',
+        userId: 'recruiter-001',
+        userRole: UserRole.RECRUITER,
+        status: ApplicationStatus.PENDING,
+      })
+    ).rejects.toThrow(/Invalid status transition/);
+
+    expect(appRepo.update).not.toHaveBeenCalled();
+  });
+
+  it('UT_F12_29 – jobRepo.findById() được gọi đúng với jobId khi UpdateApplicationStatusUseCase', async () => {
+    /**
+     * Test Case ID : UT_F12_29
+     * Test Objective: Xác minh hệ thống tra cứu đúng job để kiểm tra membership của recruiter
+     * Input         : applicationId="app-001" có jobId="job-001", userRole=RECRUITER
+     * Expected Output: jobRepo.findById() được gọi đúng 1 lần với "job-001"
+     * Notes         : CheckDB – sai jobId sẽ kiểm tra membership của công ty sai
+     */
+    const app = buildApplication({ status: ApplicationStatus.PENDING, jobId: 'job-001' });
+    const updatedApp = buildApplication({ status: ApplicationStatus.REVIEWING });
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn(),
+      findByIdWithRelations: jest.fn()
+        .mockResolvedValueOnce(app)
+        .mockResolvedValueOnce(updatedApp),
+      update: jest.fn().mockResolvedValue(updatedApp),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = {
+      findByCompanyAndUser: jest.fn().mockResolvedValue(buildMember()),
+    };
+    const useCase = new UpdateApplicationStatusUseCase(appRepo, jobRepo, memberRepo);
+
+    await useCase.execute({
+      applicationId: 'app-001',
+      userId: 'recruiter-001',
+      userRole: UserRole.RECRUITER,
+      status: ApplicationStatus.REVIEWING,
+    });
+
+    expect(jobRepo.findById).toHaveBeenCalledTimes(1);
+    expect(jobRepo.findById).toHaveBeenCalledWith('job-001');
+  });
+
+  it('UT_F12_30 – Danh sách đơn rỗng khi job chưa có ứng viên nào nộp', async () => {
+    /**
+     * Test Case ID : UT_F12_30
+     * Test Objective: Xác minh hệ thống trả về mảng rỗng (không lỗi) khi chưa có đơn
+     * Input         : jobId="job-001", userRole=ADMIN; repository trả về data=[]
+     * Expected Output: result.data là mảng rỗng []
+     * Notes         : Không được ném lỗi; danh sách rỗng là bình thường khi job mới đăng
+     */
+    const appRepo: jest.Mocked<IApplicationRepository> = {
+      findByJobId: jest.fn().mockResolvedValue({ data: [], pagination: buildPagination() }),
+      findByIdWithRelations: jest.fn(),
+      update: jest.fn(),
+    };
+    const jobRepo: jest.Mocked<IJobRepository> = { findById: jest.fn().mockResolvedValue(buildJob()) };
+    const memberRepo: jest.Mocked<ICompanyMemberRepository> = { findByCompanyAndUser: jest.fn() };
+    const useCase = new GetApplicationsByJobUseCase(appRepo, jobRepo, memberRepo);
+
+    const result = await useCase.execute({ jobId: 'job-001', userId: 'admin-001', userRole: UserRole.ADMIN });
+
+    expect(result.data).toHaveLength(0);
+    expect(result.data).toEqual([]);
   });
 });
