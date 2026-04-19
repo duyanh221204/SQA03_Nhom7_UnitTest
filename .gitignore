@@ -1,39 +1,32 @@
-# ── Dependencies ──────────────────────────────────────────────────────
+# Dependencies
 node_modules/
 
-# ── Build output ──────────────────────────────────────────────────────
+# Coverage reports (generated locally - chạy lại để tái tạo)
+coverage/
+coverage-f07/
+coverage-f08/
+
+# HTML test report (generated locally)
+html-report/
+
+# Test result text files
+result-f07.txt
+result-f08.txt
+
+# Build output
 dist/
 build/
 
-# ── Jest coverage output ──────────────────────────────────────────────
-coverage/
-
-# ── TypeScript incremental build info ────────────────────────────────
-*.tsbuildinfo
-
-# ── Python cache (generate_report.py) ────────────────────────────────
-__pycache__/
-*.pyc
-*.pyo
-
-# ── OS files ──────────────────────────────────────────────────────────
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# ── Editor / IDE ──────────────────────────────────────────────────────
-.vscode/
-.idea/
-*.suo
-*.user
-
-# ── Environment & secrets ────────────────────────────────────────────
-.env
-.env.local
-.env.*.local
-
-# ── Logs ─────────────────────────────────────────────────────────────
+# Logs
 *.log
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
