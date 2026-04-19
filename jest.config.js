@@ -5,24 +5,32 @@ module.exports = {
   testMatch: ['**/*.test.ts'],
   verbose: true,
   collectCoverage: false,
-  coverageReporters: ['text', 'lcov', 'html', 'json-summary'],
-  coverageDirectory: '../output/coverage',
-  // Collect coverage from extracted source files (F01/F02/F03/F12)
   collectCoverageFrom: [
-    'F01_DangKyTaiKhoan/F01.src.ts',
-    'F02_DangNhapDangXuat/F02.src.ts',
-    'F03_QuanLyViecLamDaUngTuyen/F03.src.ts',
-    'F12_QuanLyDonUngTuyen/F12.src.ts',
+    'src/F07/**/*.ts',
+    'src/F08/**/*.ts',
   ],
+  coverageReporters: ['text', 'lcov', 'html'],
+  coverageDirectory: 'coverage',
   transform: {
     '^.+\\.tsx?$': [
       'ts-jest',
       {
         isolatedModules: true,
-        tsconfig: {
-          strict: false,
-        },
+        tsconfig: { strict: false },
       },
     ],
   },
+  reporters: [
+    'default',
+    [
+      'jest-html-reporters',
+      {
+        publicPath: './html-report',
+        filename: 'jest_report.html',
+        openReport: false,
+        pageTitle: 'SQA03 Nhom07 - Unit Test Report',
+        expand: true,
+      },
+    ],
+  ],
 };
