@@ -5,18 +5,32 @@ module.exports = {
   testMatch: ['**/*.test.ts'],
   verbose: true,
   collectCoverage: false,
+  collectCoverageFrom: [
+    'src/F07/**/*.ts',
+    'src/F08/**/*.ts',
+  ],
   coverageReporters: ['text', 'lcov', 'html'],
   coverageDirectory: 'coverage',
   transform: {
     '^.+\\.tsx?$': [
       'ts-jest',
       {
-        // Each file compiled in isolation – prevents cross-file duplicate-identifier errors
         isolatedModules: true,
-        tsconfig: {
-          strict: false,
-        },
+        tsconfig: { strict: false },
       },
     ],
   },
+  reporters: [
+    'default',
+    [
+      'jest-html-reporters',
+      {
+        publicPath: './html-report',
+        filename: 'jest_report.html',
+        openReport: false,
+        pageTitle: 'SQA03 Nhom07 - Unit Test Report',
+        expand: true,
+      },
+    ],
+  ],
 };
